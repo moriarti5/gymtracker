@@ -919,6 +919,10 @@
         <div class="card">
           <h2 class="section-title">Seguridad</h2>
           <p class="data-hint">La app pide un PIN al abrirla en este dispositivo. Es una pantalla de bloqueo local, útil para que nadie que coja tu móvil vea tus datos sin más.</p>
+          <label class="plan-check-row" for="lock-always-ask-toggle" style="margin-bottom:14px;">
+            <input type="checkbox" id="lock-always-ask-toggle">
+            <span>Pedir el PIN cada vez que abro la app</span>
+          </label>
           <div class="row">
             <button class="btn-secondary" id="lock-now" type="button" style="flex:1;">Bloquear ahora</button>
             <button class="btn-secondary" id="reset-pin" type="button" style="flex:1;">Cambiar PIN</button>
@@ -1164,6 +1168,7 @@
   // Claude se omite, ya que ahí no aplica y localStorage puede no persistir.
   const LOCK_HASH_KEY = 'gimnasio:lock-hash';
   const LOCK_UNLOCKED_KEY = 'gimnasio:lock-unlocked';
+  const LOCK_ALWAYS_ASK_KEY = 'gimnasio:lock-always-ask';
   let lockMode = 'enter'; // 'enter' | 'create'
 
   async function sha256Hex(text){
@@ -1199,6 +1204,12 @@
       if(v) localStorage.setItem(LOCK_UNLOCKED_KEY, 'true');
       else localStorage.removeItem(LOCK_UNLOCKED_KEY);
     }catch(e){ /* no crítico */ }
+  }
+  function getAlwaysAsk(){
+    try{ return localStorage.getItem(LOCK_ALWAYS_ASK_KEY) === 'true'; }catch(e){ return false; }
+  }
+  function setAlwaysAsk(v){
+    try{ localStorage.setItem(LOCK_ALWAYS_ASK_KEY, v ? 'true' : 'false'); }catch(e){ /* no crítico */ }
   }
 
   function showLockScreen(){
@@ -1264,8 +1275,17 @@
     showLockScreen();
     showToast('PIN reiniciado.');
   });
+  $('lock-always-ask-toggle').addEventListener('change', (e)=>{
+    setAlwaysAsk(e.target.checked);
+    showToast(e.target.checked ? 'Se pedirá el PIN cada vez que abras la app.' : 'La app se mantendrá desbloqueada hasta que la bloquees.');
+  });
+  function renderLockPreference(){
+    $('lock-always-ask-toggle').checked = getAlwaysAsk();
+  }
 
-  if(!hasClaudeStorage && !isUnlocked()){
+  if(hasClaudeStorage){
+    hideLockScreen();
+  } else if(!getLockHash() || getAlwaysAsk() || !isUnlocked()){
     showLockScreen();
   } else {
     hideLockScreen();
@@ -1368,7 +1388,7 @@
     if(tab === 'historial') renderHistory();
     if(tab === 'dieta') renderDiet();
     if(tab === 'progreso') renderProgress();
-    if(tab === 'ajustes'){ renderAdmin(); renderWeightCatalog(); renderPlans(); renderPlanExercisePicker(); renderExportSummary(); }
+    if(tab === 'ajustes'){ renderAdmin(); renderWeightCatalog(); renderPlans(); renderPlanExercisePicker(); renderExportSummary(); renderLockPreference(); }
     if(tab === 'entrenar'){ populateExerciseGroupSelect(); populateExerciseSelect(); refreshWeightSelectsInForm(); populatePlanSelect(); renderPlanQueue(); }
   }
   document.querySelectorAll('nav.tabs button').forEach(btn=>{
@@ -1385,7 +1405,7 @@
     if(sub === 'ejercicios') renderAdmin();
     if(sub === 'pesos') renderWeightCatalog();
     if(sub === 'planes'){ renderPlanExercisePicker(); renderPlans(); }
-    if(sub === 'datos') renderExportSummary();
+    if(sub === 'datos'){ renderExportSummary(); renderLockPreference(); }
   }
   document.querySelectorAll('#ajustes-segmented .seg-btn').forEach(btn=>{
     btn.addEventListener('click', ()=> setAjustesSubtab(btn.dataset.subtab));
