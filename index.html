@@ -418,8 +418,8 @@
   }
   .catalog-entry{
     display:flex;
-    justify-content:space-between;
     align-items:center;
+    gap:8px;
     background:var(--surface-raised);
     border:1px solid rgba(32,30,27,0.05);
     border-radius:var(--radius-md);
@@ -427,6 +427,21 @@
     padding:11px 12px 11px 16px;
     margin-bottom:8px;
     font-size:14px;
+  }
+  .catalog-entry-name{
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .catalog-entry-mode{
+    width:auto;
+    flex-shrink:0;
+    font-size:12px;
+    padding:6px 26px 6px 10px;
+    background-position:right 8px center;
+    background-size:12px;
   }
 
   .plan-check-row{
@@ -912,9 +927,20 @@
             <input type="text" id="cat-group" list="group-suggestions" placeholder="Pecho">
             <datalist id="group-suggestions"></datalist>
           </div>
+          <div class="field">
+            <label for="cat-mode">Se registra por</label>
+            <select id="cat-mode">
+              <option value="weight">Peso</option>
+              <option value="reps">Repeticiones</option>
+              <option value="time">Tiempo</option>
+            </select>
+          </div>
           <button class="btn-primary rust" id="save-catalog-exercise" type="button">Añadir ejercicio</button>
         </div>
         <h2 class="section-title">Ejercicios dados de alta</h2>
+        <div class="field">
+          <input type="text" id="cat-search" placeholder="Buscar ejercicio...">
+        </div>
         <div id="catalog-list"></div>
       </div>
 
@@ -928,6 +954,9 @@
           <button class="btn-primary rust" id="save-catalog-weight" type="button">Añadir peso</button>
         </div>
         <h2 class="section-title">Pesos dados de alta</h2>
+        <div class="field">
+          <input type="text" id="weight-search" placeholder="Buscar peso...">
+        </div>
         <div id="weight-catalog-list"></div>
       </div>
 
@@ -945,10 +974,9 @@
             <label for="plan-search">Buscar ejercicio</label>
             <input type="text" id="plan-search" placeholder="Escribe para filtrar...">
           </div>
+          <button class="btn-primary rust" id="save-plan" type="button" style="margin-bottom:16px;">Guardar plan</button>
           <label>Ejercicios incluidos</label>
           <div id="plan-exercise-picker"></div>
-          <div style="height:6px;"></div>
-          <button class="btn-primary rust" id="save-plan" type="button">Guardar plan</button>
         </div>
       </div>
       <div class="sub-panel" id="sub-datos">
@@ -1404,6 +1432,20 @@
     try{ await db.set('seeded-defaults-v2', 'true'); }catch(e){ /* no crítico */ }
   }
 
+  // Asigna un modo de registro por defecto (peso/reps/tiempo) a los ejercicios
+  // del catálogo que todavía no lo tengan (creados antes de esta función, o
+  // recién precargados). Nunca toca un modo ya elegido explícitamente.
+  async function migrateCatalogModesIfNeeded(){
+    let changed = false;
+    state.catalog.forEach(c=>{
+      if(!c.mode){
+        c.mode = deriveDefaultMode(c.group, c.name);
+        changed = true;
+      }
+    });
+    if(changed) await saveCatalog();
+  }
+
   async function saveWorkouts(){
     try{ await db.set('workouts', JSON.stringify(state.workouts)); }
     catch(e){ console.error('No se pudo guardar el entrenamiento', e); }
@@ -1582,21 +1624,31 @@
     });
   }
 
-  // ---------- Tiempo (para ejercicios de Cardio) ----------
+  // ---------- Modo de registro por ejercicio (peso / repeticiones / tiempo) ----------
   function getExerciseGroup(name){
     const entry = state.catalog.find(c => c.name === name);
     return entry ? entry.group : null;
   }
-  function isCardioGroup(group){
-    return group === 'Cardio';
+  function getExerciseMode(name){
+    const entry = state.catalog.find(c => c.name === name);
+    return entry && entry.mode ? entry.mode : 'weight';
+  }
+  function deriveDefaultMode(group, name){
+    if(group === 'Cardio') return 'time';
+    const n = (name || '').toLowerCase();
+    if(n.includes('flexion') || n.includes('flexión') || n.includes('dominada')) return 'reps';
+    return 'weight';
   }
   function currentEntryMode(){
     const name = $('ex-select') ? $('ex-select').value : '';
-    return isCardioGroup(getExerciseGroup(name)) ? 'time' : 'weight';
+    return getExerciseMode(name);
   }
   function secondFieldHTML(mode, weight){
     if(mode === 'time'){
       return `<input type="number" class="set-weight set-time" min="0" step="0.5" placeholder="min" value="${weight != null ? weight : ''}">`;
+    }
+    if(mode === 'reps'){
+      return '';
     }
     return `<select class="set-weight">${weightOptionsHTML(weight)}</select>`;
   }
@@ -1606,9 +1658,21 @@
       if(row.dataset.mode === mode) return;
       row.dataset.mode = mode;
       const oldField = row.querySelector('.set-weight');
-      const wrapper = document.createElement('div');
-      wrapper.innerHTML = secondFieldHTML(mode, null);
-      oldField.replaceWith(wrapper.firstElementChild);
+      const html = secondFieldHTML(mode, null);
+      if(oldField){
+        if(html){
+          const wrapper = document.createElement('div');
+          wrapper.innerHTML = html;
+          oldField.replaceWith(wrapper.firstElementChild);
+        } else {
+          oldField.remove();
+        }
+      } else if(html){
+        const removeBtn = row.querySelector('[data-remove]');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        row.insertBefore(wrapper.firstElementChild, removeBtn);
+      }
     });
   }
 
@@ -1672,6 +1736,10 @@
     select.innerHTML = groups.map(g => `<option value="${escapeHTML(g)}">${escapeHTML(g)}</option>`).join('');
     if(groups.includes(prev)) select.value = prev;
   }
+  function getWorkoutMode(w){
+    return w.mode || (w.isTime ? 'time' : 'weight');
+  }
+
   function findLastWorkoutFor(name){
     if(!name) return null;
     const entries = state.workouts
@@ -1747,7 +1815,7 @@
     container.innerHTML = `
       <div class="last-workout">
         <span class="last-workout-label">Último registro · ${formatDate(last.date)}</span>
-        <div class="last-workout-sets">${setsSummary(last.sets, last.isTime)}</div>
+        <div class="last-workout-sets">${setsSummary(last.sets, getWorkoutMode(last))}</div>
       </div>
     `;
   }
@@ -1763,7 +1831,8 @@
     const sets = [];
     document.querySelectorAll('#sets-container .set-row').forEach(row=>{
       const reps = row.querySelector('.set-reps').value;
-      const rawValue = row.querySelector('.set-weight').value;
+      const weightEl = row.querySelector('.set-weight');
+      const rawValue = weightEl ? weightEl.value : '';
       const weight = rawValue === '' ? null : Number(rawValue);
       if(reps !== '' || weight != null){
         sets.push({ reps: reps === '' ? null : Number(reps), weight });
@@ -1778,7 +1847,7 @@
       id: 'w' + Date.now() + Math.random().toString(36).slice(2,6),
       date: $('log-date').value || todayISO(),
       exercise: name,
-      isTime: mode === 'time',
+      mode,
       planName: selectedPlan ? selectedPlan.name : null,
       sets
     });
@@ -1793,11 +1862,13 @@
   // ---------- Render: today's workout ----------
   let editingWorkoutId = null;
 
-  function setsSummary(sets, isTime){
+  function setsSummary(sets, mode){
     return sets.map(s=>{
       const r = s.reps ?? '–';
-      const w = s.weight != null ? (isTime ? `${s.weight}min` : `${s.weight}kg`) : '';
-      return `<b>${r}</b>${w ? '×' + w : ''}`;
+      let extra = '';
+      if(mode === 'time') extra = s.weight != null ? `${s.weight}min` : '';
+      else if(mode === 'weight') extra = s.weight != null ? `${s.weight}kg` : '';
+      return `<b>${r}</b>${extra ? '×' + extra : ''}`;
     }).join('&nbsp;&nbsp;');
   }
 
@@ -1815,7 +1886,7 @@
   }
 
   function exerciseEntryHTML(w){
-    const mode = w.isTime ? 'time' : 'weight';
+    const mode = getWorkoutMode(w);
     if(editingWorkoutId === w.id){
       return `
         <div class="exercise-entry" style="flex-direction:column; align-items:stretch;">
@@ -1836,7 +1907,7 @@
         <div>
           ${w.planName ? `<span class="plan-tag">${escapeHTML(w.planName)}</span>` : ''}
           <p class="name">${escapeHTML(w.exercise)}</p>
-          <div class="sets">${setsSummary(w.sets, w.isTime)}</div>
+          <div class="sets">${setsSummary(w.sets, getWorkoutMode(w))}</div>
         </div>
         <div style="display:flex; gap:2px;">
           <button class="btn-icon edit" data-edit-workout="${w.id}">&#9998;</button>
@@ -1875,7 +1946,7 @@
       const addRowBtn = e.target.closest('[data-add-edit-row]');
       if(addRowBtn){
         const entry = state.workouts.find(w => w.id === addRowBtn.dataset.addEditRow);
-        const mode = entry && entry.isTime ? 'time' : 'weight';
+        const mode = entry ? getWorkoutMode(entry) : 'weight';
         const editContainer = addRowBtn.closest('.exercise-entry').querySelector('.edit-sets-container');
         editContainer.insertAdjacentHTML('beforeend', setRowHTML(null, null, mode));
         renumberContainer(editContainer);
@@ -1892,12 +1963,13 @@
       if(saveBtn){
         const id = saveBtn.dataset.saveEdit;
         const entry = state.workouts.find(w => w.id === id);
-        const mode = entry && entry.isTime ? 'time' : 'weight';
+        const mode = entry ? getWorkoutMode(entry) : 'weight';
         const editContainer = saveBtn.closest('.exercise-entry').querySelector('.edit-sets-container');
         const sets = [];
         editContainer.querySelectorAll('.set-row').forEach(row=>{
           const reps = row.querySelector('.set-reps').value;
-          const rawValue = row.querySelector('.set-weight').value;
+          const weightEl = row.querySelector('.set-weight');
+          const rawValue = weightEl ? weightEl.value : '';
           const weight = rawValue === '' ? null : Number(rawValue);
           if(reps !== '' || weight != null){
             sets.push({ reps: reps === '' ? null : Number(reps), weight });
@@ -2086,9 +2158,19 @@
   }
 
   // ---------- Admin: catálogo de ejercicios ----------
+  let catModeTouched = false;
+  $('cat-mode').addEventListener('change', ()=>{ catModeTouched = true; });
+  function suggestCatMode(){
+    if(catModeTouched) return;
+    $('cat-mode').value = deriveDefaultMode($('cat-group').value.trim(), $('cat-name').value.trim());
+  }
+  $('cat-name').addEventListener('input', suggestCatMode);
+  $('cat-group').addEventListener('input', suggestCatMode);
+
   $('save-catalog-exercise').addEventListener('click', async ()=>{
     const name = $('cat-name').value.trim();
     const group = $('cat-group').value.trim();
+    const mode = $('cat-mode').value;
     if(!name){
       $('cat-name').style.borderColor = 'var(--danger)';
       $('cat-name').focus();
@@ -2102,13 +2184,16 @@
     state.catalog.push({
       id: 'c' + Date.now() + Math.random().toString(36).slice(2,6),
       name,
-      group
+      group,
+      mode
     });
     await saveCatalog();
     $('cat-name').value = '';
     $('cat-name').style.borderColor = '';
     $('cat-group').value = '';
     $('cat-group').style.borderColor = '';
+    $('cat-mode').value = 'weight';
+    catModeTouched = false;
     renderAdmin();
     populateExerciseGroupSelect();
     populateExerciseSelect();
@@ -2131,12 +2216,27 @@
         <div class="group-header">${escapeHTML(group)}</div>
         ${byGroup[group].map(c => `
           <div class="catalog-entry">
-            <span>${escapeHTML(c.name)}</span>
+            <span class="catalog-entry-name">${escapeHTML(c.name)}</span>
+            <select class="catalog-entry-mode" data-mode-for="${c.id}">
+              <option value="weight" ${c.mode === 'weight' ? 'selected' : ''}>Peso</option>
+              <option value="reps" ${c.mode === 'reps' ? 'selected' : ''}>Repeticiones</option>
+              <option value="time" ${c.mode === 'time' ? 'selected' : ''}>Tiempo</option>
+            </select>
             <button class="btn-icon" data-del-catalog="${c.id}">&times;</button>
           </div>
         `).join('')}
       </div>
     `).join('');
+    container.querySelectorAll('[data-mode-for]').forEach(sel=>{
+      sel.addEventListener('change', async ()=>{
+        const entry = state.catalog.find(c => c.id === sel.dataset.modeFor);
+        if(entry){
+          entry.mode = sel.value;
+          await saveCatalog();
+          showToast('Modo de registro actualizado.');
+        }
+      });
+    });
     container.querySelectorAll('[data-del-catalog]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
         if(!(await customConfirm('¿Eliminar este ejercicio del catálogo?'))) return;
@@ -2149,7 +2249,9 @@
         showToast('Ejercicio eliminado del catálogo.');
       });
     });
+    if($('cat-search').value) filterMuscleGroupList(container, $('cat-search').value);
   }
+  $('cat-search').addEventListener('input', ()=> filterMuscleGroupList($('catalog-list'), $('cat-search').value));
 
   // ---------- Admin: catálogo de pesos ----------
   $('save-catalog-weight').addEventListener('click', async ()=>{
@@ -2203,7 +2305,9 @@
         showToast('Peso eliminado.');
       });
     });
+    if($('weight-search').value) filterMuscleGroupList(container, $('weight-search').value);
   }
+  $('weight-search').addEventListener('input', ()=> filterMuscleGroupList($('weight-catalog-list'), $('weight-search').value));
 
   // ---------- Admin: planes de entrenamiento ----------
   function planPickerRowsHTML(checkedSet){
@@ -2229,6 +2333,24 @@
       groupEl.querySelectorAll('.plan-check-row').forEach(row=>{
         const match = !q || row.textContent.toLowerCase().includes(q);
         row.style.display = match ? '' : 'none';
+        if(match) anyVisible = true;
+      });
+      groupEl.style.display = anyVisible ? '' : 'none';
+    });
+  }
+
+  // Filtra cualquier listado agrupado por .muscle-group (catálogo de
+  // ejercicios, pesos...), ocultando filas que no coincidan con el texto
+  // buscado y el grupo entero si se queda sin ninguna fila visible.
+  function filterMuscleGroupList(container, query){
+    if(!container) return;
+    const q = query.trim().toLowerCase();
+    container.querySelectorAll('.muscle-group').forEach(groupEl=>{
+      let anyVisible = false;
+      Array.from(groupEl.children).forEach(child=>{
+        if(child.classList.contains('group-header')) return;
+        const match = !q || child.textContent.toLowerCase().includes(q);
+        child.style.display = match ? '' : 'none';
         if(match) anyVisible = true;
       });
       groupEl.style.display = anyVisible ? '' : 'none';
@@ -2299,12 +2421,12 @@
             <label>Buscar ejercicio</label>
             <input type="text" class="plan-edit-search" placeholder="Escribe para filtrar...">
           </div>
-          <label>Ejercicios incluidos</label>
-          <div class="plan-edit-picker">${planPickerRowsHTML(checkedSet)}</div>
-          <div style="display:flex; gap:8px; margin-top:12px;">
+          <div style="display:flex; gap:8px; margin-bottom:16px;">
             <button class="btn-secondary" data-cancel-edit-plan="${p.id}" type="button">Cancelar</button>
             <button class="btn-primary rust" data-save-edit-plan="${p.id}" type="button" style="flex:1;">Guardar cambios</button>
           </div>
+          <label>Ejercicios incluidos</label>
+          <div class="plan-edit-picker">${planPickerRowsHTML(checkedSet)}</div>
         </div>
       `;
     }
@@ -2595,21 +2717,31 @@
       wrap.innerHTML = `<canvas id="progress-chart"></canvas>`;
     }
     const sample = state.workouts.find(w => w.exercise === exercise);
-    const isTimeEx = !!(sample && sample.isTime);
+    const mode = sample ? getWorkoutMode(sample) : 'weight';
 
     const entries = state.workouts
       .filter(w => w.exercise === exercise)
       .map(w => {
+        if(mode === 'reps'){
+          const reps = w.sets.map(s => s.reps).filter(v => v != null);
+          return { date: w.date, value: reps.length ? Math.max(...reps) : null };
+        }
         const values = w.sets.map(s => s.weight).filter(v => v != null);
         if(values.length === 0) return { date: w.date, value: null };
-        const value = isTimeEx ? values.reduce((a,b)=> a+b, 0) : Math.max(...values);
+        const value = mode === 'time' ? values.reduce((a,b)=> a+b, 0) : Math.max(...values);
         return { date: w.date, value };
       })
       .filter(e => e.value != null)
       .sort((a,b)=> a.date.localeCompare(b.date));
 
+    const emptyCopy = {
+      reps: ['Sin repeticiones registradas', 'Añade las repeticiones de tus series para ver la evolución.'],
+      time: ['Sin tiempos registrados', 'Añade el tiempo de tus series para ver la evolución.'],
+      weight: ['Sin pesos registrados', 'Añade el peso de tus series para ver la evolución.']
+    }[mode];
+
     if(entries.length === 0){
-      wrap.innerHTML = `<div class="empty"><div class="big">${isTimeEx ? 'Sin tiempos registrados' : 'Sin pesos registrados'}</div><p>${isTimeEx ? 'Añade el tiempo de tus series para ver la evolución.' : 'Añade el peso de tus series para ver la evolución.'}</p></div>`;
+      wrap.innerHTML = `<div class="empty"><div class="big">${emptyCopy[0]}</div><p>${emptyCopy[1]}</p></div>`;
       prNote.textContent = '';
       return;
     }
@@ -2646,9 +2778,11 @@
         }
       }
     });
-    prNote.innerHTML = isTimeEx
-      ? `Mayor duración total registrada: <b>${best} min</b>`
-      : `Máximo registrado: <b>${best} kg</b>`;
+    prNote.innerHTML = mode === 'reps'
+      ? `Máximo de repeticiones: <b>${best}</b>`
+      : mode === 'time'
+        ? `Mayor duración total registrada: <b>${best} min</b>`
+        : `Máximo registrado: <b>${best} kg</b>`;
   }
 
   // ---------- Init ----------
@@ -2659,6 +2793,7 @@
     renderTimerDisplay();
     await loadState();
     await seedDefaultsIfNeeded();
+    await migrateCatalogModesIfNeeded();
     populateExerciseGroupSelect();
     populateExerciseSelect();
     if($('sets-container').children.length === 0){
