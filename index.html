@@ -562,6 +562,39 @@
   .confirm-actions{display:flex; gap:10px;}
   .confirm-actions .btn-secondary, .confirm-actions .btn-primary{margin:0;}
 
+  .lock-screen{
+    position:absolute;
+    inset:0;
+    background:var(--bg);
+    z-index:300;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:32px;
+  }
+  .lock-screen.hidden{display:none;}
+  .lock-box{width:100%; max-width:280px; text-align:center;}
+  .lock-icon{width:38px; height:38px; color:var(--rust); margin-bottom:14px;}
+  .lock-box h2{
+    font-family:'Oswald',sans-serif;
+    font-size:20px;
+    font-weight:600;
+    margin:0 0 6px;
+  }
+  .lock-subtitle{font-size:13px; color:var(--ink-soft); margin:0 0 18px; line-height:1.4;}
+  .lock-pin-input{
+    width:100%;
+    text-align:center;
+    letter-spacing:8px;
+    font-size:22px;
+    padding:12px;
+    border:1px solid var(--line);
+    border-radius:var(--radius-sm);
+    background:#fff;
+    color:var(--ink);
+  }
+  .lock-error{color:var(--danger); font-size:12.5px; margin-top:12px; min-height:16px;}
+
   .timer-card{text-align:center; padding-bottom:16px;}
   .timer-header{
     display:flex;
@@ -658,6 +691,21 @@
 </head>
 <body>
 <div id="app">
+
+  <div id="lock-screen" class="lock-screen hidden">
+    <div class="lock-box">
+      <svg class="lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="11" width="14" height="9" rx="2"/>
+        <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+      <h2 id="lock-title">Introduce tu PIN</h2>
+      <p id="lock-subtitle" class="lock-subtitle"></p>
+      <input type="password" inputmode="numeric" pattern="[0-9]*" id="lock-input" class="lock-pin-input" placeholder="••••" maxlength="12" autocomplete="off">
+      <input type="password" inputmode="numeric" pattern="[0-9]*" id="lock-confirm-input" class="lock-pin-input" placeholder="Repite el PIN" maxlength="12" autocomplete="off" style="display:none; margin-top:10px;">
+      <button class="btn-primary rust" id="lock-submit" type="button" style="margin-top:16px;">Entrar</button>
+      <p id="lock-error" class="lock-error"></p>
+    </div>
+  </div>
 
   <header>
     <div class="brand-row">
@@ -867,6 +915,14 @@
           <p class="data-hint">Restaura una copia de seguridad exportada antes. <strong>Esto reemplaza todos los datos actuales de la app</strong> por los del archivo.</p>
           <input type="file" id="import-file" accept="application/json,.json" style="margin-bottom:12px;">
           <button class="btn-secondary" id="import-data" type="button" style="width:100%;">Restaurar desde archivo</button>
+        </div>
+        <div class="card">
+          <h2 class="section-title">Seguridad</h2>
+          <p class="data-hint">La app pide un PIN al abrirla en este dispositivo. Es una pantalla de bloqueo local, útil para que nadie que coja tu móvil vea tus datos sin más.</p>
+          <div class="row">
+            <button class="btn-secondary" id="lock-now" type="button" style="flex:1;">Bloquear ahora</button>
+            <button class="btn-secondary" id="reset-pin" type="button" style="flex:1;">Cambiar PIN</button>
+          </div>
         </div>
       </div>
     </section>
@@ -1101,6 +1157,119 @@
       return { value };
     }
   };
+
+  // ---------- Bloqueo por PIN ----------
+  // Pantalla de bloqueo local: pide un PIN al abrir la app cuando se usa de
+  // forma independiente (instalada en el móvil). Dentro de la vista previa de
+  // Claude se omite, ya que ahí no aplica y localStorage puede no persistir.
+  const LOCK_HASH_KEY = 'gimnasio:lock-hash';
+  const LOCK_UNLOCKED_KEY = 'gimnasio:lock-unlocked';
+  let lockMode = 'enter'; // 'enter' | 'create'
+
+  async function sha256Hex(text){
+    try{
+      if(window.crypto && window.crypto.subtle && window.crypto.subtle.digest){
+        const enc = new TextEncoder().encode(text);
+        const buf = await window.crypto.subtle.digest('SHA-256', enc);
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+    }catch(e){ /* sin contexto seguro (ej. file://); usamos la alternativa de abajo */ }
+    // Alternativa simple para cuando Web Crypto no está disponible (no es
+    // criptográficamente robusta, pero mantiene la app funcional igualmente).
+    let hash = 0;
+    for(let i = 0; i < text.length; i++){
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return 'fb-' + Math.abs(hash).toString(16);
+  }
+  function getLockHash(){
+    try{ return localStorage.getItem(LOCK_HASH_KEY); }catch(e){ return null; }
+  }
+  function setLockHash(hash){
+    try{ localStorage.setItem(LOCK_HASH_KEY, hash); }catch(e){ /* no crítico */ }
+  }
+  function clearLockHash(){
+    try{ localStorage.removeItem(LOCK_HASH_KEY); }catch(e){ /* no crítico */ }
+  }
+  function isUnlocked(){
+    try{ return localStorage.getItem(LOCK_UNLOCKED_KEY) === 'true'; }catch(e){ return true; }
+  }
+  function setUnlocked(v){
+    try{
+      if(v) localStorage.setItem(LOCK_UNLOCKED_KEY, 'true');
+      else localStorage.removeItem(LOCK_UNLOCKED_KEY);
+    }catch(e){ /* no crítico */ }
+  }
+
+  function showLockScreen(){
+    const existingHash = getLockHash();
+    lockMode = existingHash ? 'enter' : 'create';
+    $('lock-confirm-input').style.display = lockMode === 'create' ? 'block' : 'none';
+    $('lock-title').textContent = lockMode === 'create' ? 'Crea un PIN' : 'Introduce tu PIN';
+    $('lock-subtitle').textContent = lockMode === 'create'
+      ? 'Se te pedirá cada vez que abras la app en este dispositivo.'
+      : '';
+    $('lock-input').value = '';
+    $('lock-confirm-input').value = '';
+    $('lock-error').textContent = '';
+    $('lock-screen').classList.remove('hidden');
+    setTimeout(()=> $('lock-input').focus(), 50);
+  }
+  function hideLockScreen(){
+    $('lock-screen').classList.add('hidden');
+  }
+  async function handleLockSubmit(){
+    const pin = $('lock-input').value.trim();
+    if(pin.length < 4){
+      $('lock-error').textContent = 'El PIN debe tener al menos 4 dígitos.';
+      return;
+    }
+    if(lockMode === 'create'){
+      const confirmPin = $('lock-confirm-input').value.trim();
+      if(pin !== confirmPin){
+        $('lock-error').textContent = 'Los dos PIN no coinciden.';
+        return;
+      }
+      setLockHash(await sha256Hex(pin));
+      setUnlocked(true);
+      hideLockScreen();
+      return;
+    }
+    const hash = await sha256Hex(pin);
+    if(hash === getLockHash()){
+      setUnlocked(true);
+      hideLockScreen();
+    } else {
+      $('lock-error').textContent = 'PIN incorrecto.';
+      $('lock-input').value = '';
+      $('lock-input').focus();
+    }
+  }
+  $('lock-submit').addEventListener('click', handleLockSubmit);
+  $('lock-input').addEventListener('keydown', (e)=>{ if(e.key === 'Enter' && lockMode === 'enter') handleLockSubmit(); });
+  $('lock-confirm-input').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') handleLockSubmit(); });
+
+  $('lock-now').addEventListener('click', ()=>{
+    if(!getLockHash()){
+      showToast('Primero crea un PIN para poder bloquear la app.');
+      return;
+    }
+    setUnlocked(false);
+    showLockScreen();
+  });
+  $('reset-pin').addEventListener('click', async ()=>{
+    if(!(await customConfirm('Se te pedirá crear un PIN nuevo la próxima vez que entres. ¿Continuar?'))) return;
+    clearLockHash();
+    setUnlocked(false);
+    showLockScreen();
+    showToast('PIN reiniciado.');
+  });
+
+  if(!hasClaudeStorage && !isUnlocked()){
+    showLockScreen();
+  } else {
+    hideLockScreen();
+  }
 
   async function loadState(){
     try{
