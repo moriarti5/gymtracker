@@ -913,8 +913,9 @@
     <!-- PROGRESO -->
     <section class="panel" id="panel-progreso">
       <div class="card">
-        <label for="progress-exercise">Ejercicio</label>
-        <select id="progress-exercise"></select>
+        <label for="progress-search">Ejercicios a comparar</label>
+        <input type="text" id="progress-search" placeholder="Buscar ejercicio..." style="margin-bottom:12px;">
+        <div id="progress-exercise-picker"></div>
       </div>
       <div id="progress-chart-wrap" class="chart-wrap">
         <canvas id="progress-chart"></canvas>
@@ -2867,42 +2868,22 @@
 
   // ---------- Progreso ----------
   let chartInstance = null;
+  let selectedProgressExercises = new Set();
+  const PROGRESS_PALETTE = ['#C1481F', '#4B6B4F', '#B98B2E', '#3B6E4F', '#9A3818', '#6B655B', '#2563EB', '#8B5CF6'];
+
   function uniqueLoggedExercises(){
     const set = new Set();
     state.workouts.forEach(w => set.add(w.exercise));
     return Array.from(set).sort((a,b)=> a.localeCompare(b));
   }
-  function populateProgressSelect(){
-    const list = uniqueLoggedExercises();
-    const select = $('progress-exercise');
-    const prev = select.value;
-    select.innerHTML = list.map(n => `<option value="${escapeHTML(n)}">${escapeHTML(n)}</option>`).join('');
-    if(list.includes(prev)) select.value = prev;
+  function progressModeUnit(mode){
+    return mode === 'time' ? 'min' : mode === 'reps' ? 'reps' : 'kg';
   }
-  $('progress-exercise').addEventListener('change', renderProgressChart);
-
-  function renderProgress(){
-    populateProgressSelect();
-    renderProgressChart();
-  }
-
-  function renderProgressChart(){
-    const exercise = $('progress-exercise').value;
-    const wrap = $('progress-chart-wrap');
-    const prNote = $('progress-pr');
-    if(!exercise){
-      wrap.innerHTML = `<div class="empty"><div class="big">Aún no hay datos</div><p>Registra un ejercicio en la pestaña Entrenar para ver tu progreso.</p></div>`;
-      prNote.textContent = '';
-      return;
-    }
-    if(!document.getElementById('progress-chart')){
-      wrap.innerHTML = `<canvas id="progress-chart"></canvas>`;
-    }
-    const sample = state.workouts.find(w => w.exercise === exercise);
+  function computeExerciseSeries(name){
+    const sample = state.workouts.find(w => w.exercise === name);
     const mode = sample ? getWorkoutMode(sample) : 'weight';
-
-    const entries = state.workouts
-      .filter(w => w.exercise === exercise)
+    const points = state.workouts
+      .filter(w => w.exercise === name)
       .map(w => {
         if(mode === 'reps'){
           const reps = w.sets.map(s => s.reps).filter(v => v != null);
@@ -2915,56 +2896,137 @@
       })
       .filter(e => e.value != null)
       .sort((a,b)=> a.date.localeCompare(b.date));
+    return { mode, points };
+  }
 
-    const emptyCopy = {
-      reps: ['Sin repeticiones registradas', 'Añade las repeticiones de tus series para ver la evolución.'],
-      time: ['Sin tiempos registrados', 'Añade el tiempo de tus series para ver la evolución.'],
-      weight: ['Sin pesos registrados', 'Añade el peso de tus series para ver la evolución.']
-    }[mode];
+  function renderProgressExercisePicker(){
+    const container = $('progress-exercise-picker');
+    const names = uniqueLoggedExercises();
+    if(names.length === 0){
+      container.innerHTML = `<div class="empty"><div class="big">Aún no hay datos</div><p>Registra un ejercicio en la pestaña Entrenar para ver tu progreso.</p></div>`;
+      return;
+    }
+    const byGroup = {};
+    names.forEach(name=>{
+      const group = getExerciseGroup(name) || 'Otros';
+      (byGroup[group] = byGroup[group] || []).push(name);
+    });
+    const groups = Object.keys(byGroup).sort((a,b)=> a.localeCompare(b));
+    container.innerHTML = groups.map(group => `
+      <div class="muscle-group plan-picker-group">
+        <div class="group-header">${escapeHTML(group)}</div>
+        ${byGroup[group].map(name => {
+          const { mode } = computeExerciseSeries(name);
+          return `
+            <label class="plan-check-row">
+              <input type="checkbox" value="${escapeHTML(name)}" ${selectedProgressExercises.has(name) ? 'checked' : ''}>
+              <span style="flex:1;">${escapeHTML(name)}</span>
+              <span class="entry-badge group-tag" style="margin:0;">${progressModeUnit(mode)}</span>
+            </label>
+          `;
+        }).join('')}
+      </div>
+    `).join('');
+    if($('progress-search').value) filterPlanPicker(container, $('progress-search').value);
+  }
+  $('progress-search').addEventListener('input', ()=> filterPlanPicker($('progress-exercise-picker'), $('progress-search').value));
+  $('progress-exercise-picker').addEventListener('change', (e)=>{
+    const cb = e.target.closest('input[type="checkbox"]');
+    if(!cb) return;
+    if(cb.checked) selectedProgressExercises.add(cb.value);
+    else selectedProgressExercises.delete(cb.value);
+    renderProgressChart();
+  });
 
-    if(entries.length === 0){
-      wrap.innerHTML = `<div class="empty"><div class="big">${emptyCopy[0]}</div><p>${emptyCopy[1]}</p></div>`;
-      prNote.textContent = '';
+  function renderProgress(){
+    const names = uniqueLoggedExercises();
+    // Limpia selecciones de ejercicios que ya no tengan historial.
+    selectedProgressExercises.forEach(n=>{ if(!names.includes(n)) selectedProgressExercises.delete(n); });
+    if(selectedProgressExercises.size === 0 && names.length > 0){
+      selectedProgressExercises.add(names[names.length - 1]);
+    }
+    renderProgressExercisePicker();
+    renderProgressChart();
+  }
+
+  function renderProgressChart(){
+    const wrap = $('progress-chart-wrap');
+    const prNote = $('progress-pr');
+    const selected = Array.from(selectedProgressExercises);
+
+    if(selected.length === 0){
+      wrap.innerHTML = `<div class="empty"><div class="big">Selecciona un ejercicio</div><p>Elige uno o varios arriba para ver su evolución.</p></div>`;
+      prNote.innerHTML = '';
       return;
     }
 
-    const labels = entries.map(e => formatDateShort(e.date));
-    const data = entries.map(e => e.value);
-    const best = Math.max(...entries.map(e => e.value));
+    const series = selected.map(name => ({ name, ...computeExerciseSeries(name) }));
+    const withData = series.filter(s => s.points.length > 0);
+
+    if(withData.length === 0){
+      wrap.innerHTML = `<div class="empty"><div class="big">Sin datos suficientes</div><p>Añade series con reps, peso o tiempo para ver la evolución.</p></div>`;
+      prNote.innerHTML = '';
+      return;
+    }
+
+    if(!document.getElementById('progress-chart')){
+      wrap.innerHTML = `<canvas id="progress-chart"></canvas>`;
+    }
+
+    const allDates = Array.from(new Set(withData.flatMap(s => s.points.map(p => p.date)))).sort((a,b)=> a.localeCompare(b));
+    const labels = allDates.map(d => formatDateShort(d));
+
+    const datasets = withData.map((s, i) => {
+      const color = PROGRESS_PALETTE[i % PROGRESS_PALETTE.length];
+      const map = new Map(s.points.map(p => [p.date, p.value]));
+      const data = allDates.map(d => map.has(d) ? map.get(d) : null);
+      const unit = progressModeUnit(s.mode);
+      return {
+        label: `${s.name} (${unit})`,
+        data,
+        borderColor: color,
+        backgroundColor: withData.length === 1 ? 'rgba(193,72,31,0.12)' : color,
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: color,
+        tension: 0.25,
+        fill: withData.length === 1,
+        spanGaps: false
+      };
+    });
 
     if(chartInstance){ chartInstance.destroy(); }
     const ctx = document.getElementById('progress-chart').getContext('2d');
     chartInstance = new Chart(ctx, {
       type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: exercise,
-          data,
-          borderColor: '#C1481F',
-          backgroundColor: 'rgba(193,72,31,0.12)',
-          borderWidth: 2,
-          pointRadius: 3,
-          pointBackgroundColor: '#C1481F',
-          tension: 0.25,
-          fill: true
-        }]
-      },
+      data: { labels, datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
+        plugins: {
+          legend: {
+            display: datasets.length > 1,
+            position: 'bottom',
+            labels: { color: '#6B655B', font: { family: 'Inter', size: 11 }, boxWidth: 12, padding: 12 }
+          }
+        },
         scales: {
           x: { grid: { display: false }, ticks: { color: '#6B655B', font: { family: 'Inter', size: 11 } } },
           y: { grid: { color: '#E3DDCD' }, ticks: { color: '#6B655B', font: { family: 'Inter', size: 11 } } }
         }
       }
     });
-    prNote.innerHTML = mode === 'reps'
-      ? `Máximo de repeticiones: <b>${best}</b>`
-      : mode === 'time'
-        ? `Mayor duración total registrada: <b>${best} min</b>`
-        : `Máximo registrado: <b>${best} kg</b>`;
+
+    prNote.innerHTML = withData.map((s, i) => {
+      const color = PROGRESS_PALETTE[i % PROGRESS_PALETTE.length];
+      const best = Math.max(...s.points.map(p => p.value));
+      const text = s.mode === 'reps'
+        ? `Máximo de repeticiones: <b>${best}</b>`
+        : s.mode === 'time'
+          ? `Mayor duración total: <b>${best} min</b>`
+          : `Máximo registrado: <b>${best} kg</b>`;
+      return `<div style="margin-bottom:4px;"><span style="display:inline-block; width:8px; height:8px; border-radius:999px; background:${color}; margin-right:6px;"></span>${escapeHTML(s.name)} — ${text}</div>`;
+    }).join('');
   }
 
   // ---------- Init ----------
