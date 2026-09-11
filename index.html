@@ -312,18 +312,18 @@
     border-radius:999px;
     margin-bottom:6px;
   }
-  .plan-tag{
+  .entry-badge{
     display:inline-block;
     font-family:'Oswald',sans-serif;
     font-size:10px;
     letter-spacing:0.04em;
     text-transform:uppercase;
-    color:var(--rust-dark);
-    background:var(--rust-tint);
     padding:2px 8px;
     border-radius:999px;
-    margin-bottom:6px;
+    margin:0 6px 6px 0;
   }
+  .entry-badge.plan-tag{color:var(--rust-dark); background:var(--rust-tint);}
+  .entry-badge.group-tag{color:var(--ink-soft); background:var(--surface);}
   .period-group{margin-bottom:16px;}
   .period-group .period-header{
     font-family:'Oswald',sans-serif;
@@ -418,7 +418,7 @@
   }
   .catalog-entry{
     display:flex;
-    align-items:center;
+    align-items:flex-start;
     gap:8px;
     background:var(--surface-raised);
     border:1px solid rgba(32,30,27,0.05);
@@ -431,9 +431,10 @@
   .catalog-entry-name{
     flex:1;
     min-width:0;
-    overflow:hidden;
-    text-overflow:ellipsis;
-    white-space:nowrap;
+    white-space:normal;
+    word-break:break-word;
+    line-height:1.35;
+    padding-top:7px;
   }
   .catalog-entry-mode{
     width:auto;
@@ -443,6 +444,7 @@
     background-position:right 8px center;
     background-size:12px;
   }
+  .catalog-entry.editing{align-items:stretch;}
 
   .plan-check-row{
     display:flex;
@@ -850,6 +852,20 @@
 
     <!-- HISTORIAL -->
     <section class="panel" id="panel-historial">
+      <div class="card">
+        <h2 class="section-title">Buscar en el historial</h2>
+        <div class="row">
+          <div class="field">
+            <label for="history-date-from">Desde</label>
+            <input type="date" id="history-date-from">
+          </div>
+          <div class="field">
+            <label for="history-date-to">Hasta</label>
+            <input type="date" id="history-date-to">
+          </div>
+        </div>
+        <button class="btn-secondary" id="history-date-clear" type="button" style="width:100%;">Quitar filtro</button>
+      </div>
       <div id="history-list"></div>
     </section>
 
@@ -1847,6 +1863,7 @@
       id: 'w' + Date.now() + Math.random().toString(36).slice(2,6),
       date: $('log-date').value || todayISO(),
       exercise: name,
+      group: getExerciseGroup(name),
       mode,
       planName: selectedPlan ? selectedPlan.name : null,
       sets
@@ -1887,6 +1904,7 @@
 
   function exerciseEntryHTML(w){
     const mode = getWorkoutMode(w);
+    const group = w.group || getExerciseGroup(w.exercise);
     if(editingWorkoutId === w.id){
       return `
         <div class="exercise-entry" style="flex-direction:column; align-items:stretch;">
@@ -1905,7 +1923,8 @@
     return `
       <div class="exercise-entry">
         <div>
-          ${w.planName ? `<span class="plan-tag">${escapeHTML(w.planName)}</span>` : ''}
+          ${group ? `<span class="entry-badge group-tag">${escapeHTML(group)}</span>` : ''}
+          ${w.planName ? `<span class="entry-badge plan-tag">${escapeHTML(w.planName)}</span>` : ''}
           <p class="name">${escapeHTML(w.exercise)}</p>
           <div class="sets">${setsSummary(w.sets, getWorkoutMode(w))}</div>
         </div>
@@ -2014,8 +2033,18 @@
       container.innerHTML = `<div class="empty"><div class="big">Todavía no hay historial</div><p>Los entrenamientos que registres aparecerán aquí.</p></div>`;
       return;
     }
+    const fromVal = $('history-date-from').value;
+    const toVal = $('history-date-to').value;
+    let list = state.workouts;
+    if(fromVal) list = list.filter(w => w.date >= fromVal);
+    if(toVal) list = list.filter(w => w.date <= toVal);
+
+    if(list.length === 0){
+      container.innerHTML = `<div class="empty"><div class="big">Sin resultados</div><p>No hay entrenamientos registrados en ese rango de fechas.</p></div>`;
+      return;
+    }
     const byDate = {};
-    state.workouts.forEach(w=>{
+    list.forEach(w=>{
       (byDate[w.date] = byDate[w.date] || []).push(w);
     });
     const dates = Object.keys(byDate).sort((a,b)=> b.localeCompare(a));
@@ -2026,6 +2055,13 @@
       </div>
     `).join('');
   }
+  $('history-date-from').addEventListener('change', renderHistory);
+  $('history-date-to').addEventListener('change', renderHistory);
+  $('history-date-clear').addEventListener('click', ()=>{
+    $('history-date-from').value = '';
+    $('history-date-to').value = '';
+    renderHistory();
+  });
 
   // ---------- Dieta ----------
   const MEAL_PERIODS = ['Desayuno', 'Media mañana', 'Comida', 'Merienda', 'Cena'];
@@ -2181,6 +2217,10 @@
       $('cat-group').focus();
       return;
     }
+    if(state.catalog.some(c => c.name.trim().toLowerCase() === name.toLowerCase())){
+      showToast('Ya existe un ejercicio con ese nombre.');
+      return;
+    }
     state.catalog.push({
       id: 'c' + Date.now() + Math.random().toString(36).slice(2,6),
       name,
@@ -2201,6 +2241,58 @@
     showToast('Ejercicio dado de alta.');
   });
 
+  let editingCatalogId = null;
+
+  async function renameExerciseEverywhere(oldName, newName){
+    if(oldName === newName) return;
+    let touched = false;
+    state.workouts.forEach(w=>{ if(w.exercise === oldName){ w.exercise = newName; touched = true; } });
+    state.plans.forEach(p=>{
+      if(p.exercises.includes(oldName)){
+        p.exercises = p.exercises.map(e => e === oldName ? newName : e);
+        touched = true;
+      }
+    });
+    if(touched){
+      await saveWorkouts();
+      await savePlans();
+    }
+  }
+
+  function catalogEntryHTML(c){
+    if(editingCatalogId === c.id){
+      return `
+        <div class="catalog-entry editing">
+          <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
+            <input type="text" class="cat-edit-name" value="${escapeHTML(c.name)}" placeholder="Nombre del ejercicio">
+            <input type="text" class="cat-edit-group" value="${escapeHTML(c.group)}" list="group-suggestions" placeholder="Grupo muscular">
+            <select class="cat-edit-mode">
+              <option value="weight" ${c.mode === 'weight' ? 'selected' : ''}>Peso</option>
+              <option value="reps" ${c.mode === 'reps' ? 'selected' : ''}>Repeticiones</option>
+              <option value="time" ${c.mode === 'time' ? 'selected' : ''}>Tiempo</option>
+            </select>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-secondary" data-cancel-edit-catalog="${c.id}" type="button" style="flex:1;">Cancelar</button>
+              <button class="btn-primary rust" data-save-edit-catalog="${c.id}" type="button" style="flex:1;">Guardar</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="catalog-entry">
+        <span class="catalog-entry-name">${escapeHTML(c.name)}</span>
+        <select class="catalog-entry-mode" data-mode-for="${c.id}">
+          <option value="weight" ${c.mode === 'weight' ? 'selected' : ''}>Peso</option>
+          <option value="reps" ${c.mode === 'reps' ? 'selected' : ''}>Repeticiones</option>
+          <option value="time" ${c.mode === 'time' ? 'selected' : ''}>Tiempo</option>
+        </select>
+        <button class="btn-icon edit" data-edit-catalog="${c.id}">&#9998;</button>
+        <button class="btn-icon" data-del-catalog="${c.id}">&times;</button>
+      </div>
+    `;
+  }
+
   function renderAdmin(){
     $('group-suggestions').innerHTML = groupsInUse().map(g => `<option value="${escapeHTML(g)}"></option>`).join('');
 
@@ -2214,17 +2306,7 @@
     container.innerHTML = groups.map(group => `
       <div class="muscle-group">
         <div class="group-header">${escapeHTML(group)}</div>
-        ${byGroup[group].map(c => `
-          <div class="catalog-entry">
-            <span class="catalog-entry-name">${escapeHTML(c.name)}</span>
-            <select class="catalog-entry-mode" data-mode-for="${c.id}">
-              <option value="weight" ${c.mode === 'weight' ? 'selected' : ''}>Peso</option>
-              <option value="reps" ${c.mode === 'reps' ? 'selected' : ''}>Repeticiones</option>
-              <option value="time" ${c.mode === 'time' ? 'selected' : ''}>Tiempo</option>
-            </select>
-            <button class="btn-icon" data-del-catalog="${c.id}">&times;</button>
-          </div>
-        `).join('')}
+        ${byGroup[group].map(catalogEntryHTML).join('')}
       </div>
     `).join('');
     container.querySelectorAll('[data-mode-for]').forEach(sel=>{
@@ -2235,6 +2317,54 @@
           await saveCatalog();
           showToast('Modo de registro actualizado.');
         }
+      });
+    });
+    container.querySelectorAll('[data-edit-catalog]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        editingCatalogId = btn.dataset.editCatalog;
+        renderAdmin();
+      });
+    });
+    container.querySelectorAll('[data-cancel-edit-catalog]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        editingCatalogId = null;
+        renderAdmin();
+      });
+    });
+    container.querySelectorAll('[data-save-edit-catalog]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id = btn.dataset.saveEditCatalog;
+        const row = btn.closest('.catalog-entry');
+        const name = row.querySelector('.cat-edit-name').value.trim();
+        const group = row.querySelector('.cat-edit-group').value.trim();
+        const mode = row.querySelector('.cat-edit-mode').value;
+        if(!name || !group){
+          showToast('El ejercicio necesita nombre y grupo muscular.');
+          return;
+        }
+        const nameConflict = state.catalog.some(c2 => c2.id !== id && c2.name.trim().toLowerCase() === name.toLowerCase());
+        if(nameConflict){
+          showToast('Ya existe otro ejercicio con ese nombre.');
+          return;
+        }
+        const entry = state.catalog.find(c => c.id === id);
+        if(entry){
+          const oldName = entry.name;
+          entry.name = name;
+          entry.group = group;
+          entry.mode = mode;
+          await saveCatalog();
+          await renameExerciseEverywhere(oldName, name);
+        }
+        editingCatalogId = null;
+        renderAdmin();
+        populateExerciseGroupSelect();
+        populateExerciseSelect();
+        renderPlanExercisePicker();
+        renderTodayWorkout();
+        renderHistory();
+        renderPlans();
+        showToast('Ejercicio actualizado.');
       });
     });
     container.querySelectorAll('[data-del-catalog]').forEach(btn=>{
@@ -2278,6 +2408,27 @@
     showToast('Peso dado de alta.');
   });
 
+  let editingWeightId = null;
+
+  function weightEntryHTML(w){
+    if(editingWeightId === w.id){
+      return `
+        <div class="catalog-entry editing">
+          <input type="number" class="weight-edit-value" min="0" step="0.5" value="${w.value}" style="flex:1;">
+          <button class="btn-secondary" data-cancel-edit-weight="${w.id}" type="button">Cancelar</button>
+          <button class="btn-primary rust" data-save-edit-weight="${w.id}" type="button">Guardar</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="catalog-entry">
+        <span style="flex:1;">${w.value} kg</span>
+        <button class="btn-icon edit" data-edit-weight="${w.id}">&#9998;</button>
+        <button class="btn-icon" data-del-weight="${w.id}">&times;</button>
+      </div>
+    `;
+  }
+
   function renderWeightCatalog(){
     const container = $('weight-catalog-list');
     if(state.weightCatalog.length === 0){
@@ -2287,14 +2438,45 @@
     const sorted = [...state.weightCatalog].sort((a,b)=> a.value - b.value);
     container.innerHTML = `
       <div class="muscle-group">
-        ${sorted.map(w => `
-          <div class="catalog-entry">
-            <span>${w.value} kg</span>
-            <button class="btn-icon" data-del-weight="${w.id}">&times;</button>
-          </div>
-        `).join('')}
+        ${sorted.map(weightEntryHTML).join('')}
       </div>
     `;
+    container.querySelectorAll('[data-edit-weight]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        editingWeightId = btn.dataset.editWeight;
+        renderWeightCatalog();
+      });
+    });
+    container.querySelectorAll('[data-cancel-edit-weight]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        editingWeightId = null;
+        renderWeightCatalog();
+      });
+    });
+    container.querySelectorAll('[data-save-edit-weight]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id = btn.dataset.saveEditWeight;
+        const row = btn.closest('.catalog-entry');
+        const raw = row.querySelector('.weight-edit-value').value;
+        if(raw === ''){
+          showToast('Indica un valor de peso.');
+          return;
+        }
+        const value = Number(raw);
+        const conflict = state.weightCatalog.some(w2 => w2.id !== id && w2.value === value);
+        if(conflict){
+          showToast('Ya existe ese peso en el catálogo.');
+          return;
+        }
+        const entry = state.weightCatalog.find(w => w.id === id);
+        if(entry) entry.value = value;
+        await saveWeightCatalog();
+        editingWeightId = null;
+        renderWeightCatalog();
+        refreshWeightSelectsInForm();
+        showToast('Peso actualizado.');
+      });
+    });
     container.querySelectorAll('[data-del-weight]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
         if(!(await customConfirm('¿Eliminar este peso del catálogo?'))) return;
