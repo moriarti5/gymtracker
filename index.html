@@ -912,15 +912,16 @@
 
     <!-- PROGRESO -->
     <section class="panel" id="panel-progreso">
-      <div class="card">
-        <label for="progress-search">Ejercicios a comparar</label>
-        <input type="text" id="progress-search" placeholder="Buscar ejercicio..." style="margin-bottom:12px;">
-        <div id="progress-exercise-picker"></div>
-      </div>
       <div id="progress-chart-wrap" class="chart-wrap">
         <canvas id="progress-chart"></canvas>
       </div>
       <div class="pr-note" id="progress-pr"></div>
+      <div class="card" style="margin-top:20px;">
+        <label for="progress-search">Ejercicios a comparar</label>
+        <p class="data-hint" id="progress-mode-note" style="margin:-6px 0 10px;"></p>
+        <input type="text" id="progress-search" placeholder="Buscar ejercicio..." style="margin-bottom:12px;">
+        <div id="progress-exercise-picker"></div>
+      </div>
     </section>
 
     <!-- AJUSTES -->
@@ -2883,7 +2884,7 @@
     const sample = state.workouts.find(w => w.exercise === name);
     const mode = sample ? getWorkoutMode(sample) : 'weight';
     const points = state.workouts
-      .filter(w => w.exercise === name)
+      .filter(w => w.exercise === name && Array.isArray(w.sets))
       .map(w => {
         if(mode === 'reps'){
           const reps = w.sets.map(s => s.reps).filter(v => v != null);
@@ -2899,6 +2900,10 @@
     return { mode, points };
   }
 
+  function safeExerciseMode(name){
+    try{ return computeExerciseSeries(name).mode; }catch(e){ return 'weight'; }
+  }
+
   function renderProgressExercisePicker(){
     const container = $('progress-exercise-picker');
     const names = uniqueLoggedExercises();
@@ -2906,8 +2911,19 @@
       container.innerHTML = `<div class="empty"><div class="big">Aún no hay datos</div><p>Registra un ejercicio en la pestaña Entrenar para ver tu progreso.</p></div>`;
       return;
     }
+
+    let lockedMode = null;
+    if(selectedProgressExercises.size > 0){
+      lockedMode = safeExerciseMode(Array.from(selectedProgressExercises)[0]);
+    }
+    $('progress-mode-note').textContent = lockedMode
+      ? `Comparando por ${progressModeUnit(lockedMode)}: solo se muestran ejercicios que se miden igual.`
+      : '';
+
     const byGroup = {};
     names.forEach(name=>{
+      const mode = safeExerciseMode(name);
+      if(lockedMode && mode !== lockedMode) return;
       const group = getExerciseGroup(name) || 'Otros';
       (byGroup[group] = byGroup[group] || []).push(name);
     });
@@ -2916,7 +2932,7 @@
       <div class="muscle-group plan-picker-group">
         <div class="group-header">${escapeHTML(group)}</div>
         ${byGroup[group].map(name => {
-          const { mode } = computeExerciseSeries(name);
+          const mode = safeExerciseMode(name);
           return `
             <label class="plan-check-row">
               <input type="checkbox" value="${escapeHTML(name)}" ${selectedProgressExercises.has(name) ? 'checked' : ''}>
@@ -2935,10 +2951,12 @@
     if(!cb) return;
     if(cb.checked) selectedProgressExercises.add(cb.value);
     else selectedProgressExercises.delete(cb.value);
+    renderProgressExercisePicker();
     renderProgressChart();
   });
 
   function renderProgress(){
+    $('progress-search').value = '';
     const names = uniqueLoggedExercises();
     // Limpia selecciones de ejercicios que ya no tengan historial.
     selectedProgressExercises.forEach(n=>{ if(!names.includes(n)) selectedProgressExercises.delete(n); });
